@@ -96,7 +96,7 @@ Parameters:
   SGKey:
     Description: Sendgrid API Key to trigger emails
     Type: String
-    Default: "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"
+    Default: "{SendGrid Key}"
   LoadBalancerSGName:
     Description: Name for Load balancer security group
     Type: String
