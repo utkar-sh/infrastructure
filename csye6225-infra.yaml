@@ -1,0 +1,1044 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+# This CloudFormation template deploys a basic VPC / Network.  Specifically:
+# It deploys a VPC with 6 subnets (3 public, 3 private) across 3 Availability Zones
+# The VPC and subnets are exported for use by other stacks.
+
+Parameters:
+  VPCCidrBlock:
+    Description: This refers to the CidrBlock to be used by VPC
+    Type: String
+    Default: 10.1.0.0/16
+  VPCSubnetCidrBlock:
+    Description: Cidr Blocks for subnets
+    Type: CommaDelimitedList
+    Default: "10.1.10.0/24, 10.1.20.0/24, 10.1.30.0/24, 10.1.40.0/24, 10.1.50.0/24, 10.1.60.0/24"
+  AMIImageId:
+    Description: AMI Image Id for EC2 Instance
+    Type: String
+    Default: ami-09f8a570fe31a2049
+  PrivateRouteTableName:
+    Description: Tag for Private Route Table
+    Type: String
+    Default: PrivateRouteTable  
+  PublicRouteDestinationCidr:
+    Description: Destination Cidr Block for public route
+    Type: String
+    Default: 0.0.0.0/0
+  S3BucketName:
+    Description: Instance Name
+    Type: String
+    Default: "csye6225"
+  WebAppArtifactsS3BucketName:
+    Description: Instance Name
+    Type: String
+    Default: "webapp-build-artifacts"
+  RDSDbName:
+    Description: RDS DB Name
+    Type: String
+    Default: "csye6225"
+  RDSDbMasterUserName:
+    Description: "RDS Master Username"
+    Type: String
+    Default: "csye6225"
+  RDSDbMasterPassword:
+    Description: "RDS Master Password"
+    Type: String
+    Default: "DBCsye6225"
+  InstanceSecurityGroupName:
+    Description: Tag for Instance Security Group
+    Type: String
+    Default: "application"
+  DBSecurityGroupName:
+    Description: Tag for DB Security Group
+    Type: String
+    Default: "database"
+  IAMPolicyName:
+    Description: Policy name for EC2 to S3
+    Type: String
+    Default: "WebAppS3"
+  IAMRoleName:
+    Description: Role name connecting EC2 service with IAM Policy
+    Type: String
+    Default: "EC2-CSYE6225"
+  EnvironmentDev:
+    Description: A reference to the Webserver FQDN domain name
+    Type: String
+    Default: "dev"
+  EnvironmentStage:
+    Description: A reference to the Webserver FQDN domain name
+    Type: String
+    Default: "stage"
+  DevHostedZoneId:
+    Description: Identifier for the hosted zone
+    Type: String
+    Default: "Z095112731V7H90UHKQIN"
+  StageHostedZoneId:
+    Description: Identifier for hosted zone in stage
+    Type: String
+    Default: "Z006041216V2V60QWK60"
+  HostedZName:
+    Description: Hosted zone name for creating records
+    Type: String
+    Default: "utkarshneu.me"
+  SNSTopicName:
+    Description: "SNS topic name for new account email verification"
+    Type: String
+    Default: "UserAccountVerificationSNSTopic"
+  LambdaFunctionS3BucketName:
+    Description: Bucket Name for Lambda
+    Type: String
+    Default: "csye6225-lambda"
+  LambdaFunctionName:
+    Description: Function to send emails
+    Type: String
+    Default: "LambdaFunction"
+  SGKey:
+    Description: Sendgrid API Key to trigger emails
+    Type: String
+    Default: "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"
+  LoadBalancerSGName:
+    Description: Name for Load balancer security group
+    Type: String
+    Default: "LoadBalancer"
+  DevCertificate:
+    Description: ACM for dev account
+    Type: String
+    Default: "arn:aws:acm:us-west-2:327836084619:certificate/11233c91-9b93-4142-aec2-bb0872bb9871"
+  StageCertificate:
+    Description: SSL Certificate for Stage account
+    Type: String
+    Default: "arn:aws:acm:us-west-2:531886003212:certificate/bb130fa6-7e41-4627-8ff5-547d38b70bf3"
+
+Resources:
+  # First, a VPC:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCidrBlock
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Join: ['', [Ref: "AWS::StackName", "-VPC" ]]
+
+  # Our VPC will need internet access:      
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    # Notice how you can't attach an IGW to a VPC unless both are created:
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Creating 3 public subnets
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [0, !Ref VPCSubnetCidrBlock]
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""    # Get the first AZ in the list        
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: '${AWS::StackName}-Public-A'
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [1, !Ref VPCSubnetCidrBlock]
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: ""    # Get the second AZ in the list
+      MapPublicIpOnLaunch: true  
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: '${AWS::StackName}-Public-B'
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [2, !Ref VPCSubnetCidrBlock]
+      AvailabilityZone:
+        Fn::Select:
+          - 2
+          - Fn::GetAZs: ""    # Get the second AZ in the list  
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: '${AWS::StackName}-Public-C'
+  
+  #Private Subnets
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [3, !Ref VPCSubnetCidrBlock]
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: '${AWS::StackName}-Private-A'
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [4, !Ref VPCSubnetCidrBlock]
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: ""
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: '${AWS::StackName}-Private-B'
+  PrivateSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: VPC
+      CidrBlock: !Select [5, !Ref VPCSubnetCidrBlock]
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: '${AWS::StackName}-Private-C' 
+  # Some route tables for our subnets:
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: !Ref AWS::StackName
+
+  PublicRoute1:   # Public route table has direct routing to IGW:
+    Type: AWS::EC2::Route
+    DependsOn: 
+      - InternetGateway
+      - AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: !Ref PublicRouteDestinationCidr
+      GatewayId: !Ref InternetGateway
+      
+  # Here is a private route table:
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Name
+        Value: Private
+      - Key: VPC Name
+        Value: !Ref AWS::StackName
+  # PrivateRoute1:            # Private route table can access web via NAT (created below)
+  #   Type: AWS::EC2::Route
+  #   DependsOn:
+  #     - InternetGateway
+  #     - AttachGateway
+  #   Properties:
+  #     RouteTableId: !Ref PrivateRouteTable
+  #     DestinationCidrBlock: 0.0.0.0/0
+  #     GatewayId: !Ref InternetGateway
+
+  # Attach the public subnets to public route tables, 
+  # and attach the private subnets to private route tables:    
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetC
+      RouteTableId: !Ref PublicRouteTable
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetA
+      RouteTableId:
+        Ref: PrivateRouteTable
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetB
+      RouteTableId:
+        Ref: PrivateRouteTable
+  PrivateSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetC
+      RouteTableId:
+        Ref: PrivateRouteTable
+  
+  # Assignment-04
+  # Adding Security Group 
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: application
+      GroupDescription: Allowing HTTP/HTTPS and SSH inbound and outbound traffic
+      VpcId:
+        Ref: VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 5001
+          ToPort: 5001
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref InstanceSecurityGroupName
+  
+  #Adding DataBase Security Group
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: InstanceSecurityGroup
+    Properties:
+      GroupName: database
+      GroupDescription: Allowing inbound traffic from application security group
+      VpcId:
+        Ref: VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref InstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref DBSecurityGroupName
+  
+  #Creating S3 bucket
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      BucketName: !Ref S3BucketName
+        # Fn::Join: 
+        #   - "-"
+        #   - - "s3bucket"
+        #     - Fn::Select:
+        #       - 0
+        #       - Fn::Split:
+        #         - "-"
+        #         - Fn::Select:
+        #           - 2
+        #           - Fn::Split:
+        #             - "/"
+        #             - !Ref AWS::StackId
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: Move to Standard IA
+            Prefix: profile
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+
+  #Database Subnet Group
+  DBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: Private Subnet Group for MySql Database
+      DBSubnetGroupName: RDS Subnet Group
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+        - !Ref PrivateSubnetC
+  
+  #RDS Database Parameter Group
+  RDSDBParameterGroup:
+    Type: 'AWS::RDS::DBParameterGroup'
+    Properties:
+      Description: PG-MySQL8
+      Family: mysql8.0
+
+#RDS DB Instance
+  RDSDBInstance:
+    Type: 'AWS::RDS::DBInstance'
+    DeletionPolicy: Delete
+    DependsOn:
+      - DBSecurityGroup
+      - DBSubnetGroup
+      - RDSDBParameterGroup
+    Properties:
+        MultiAZ: false
+        DBInstanceIdentifier: !Ref RDSDbName
+        CACertificateIdentifier: rds-ca-2019
+        DBName: !Ref RDSDbName
+        Port: 3306
+        DBInstanceClass: db.t3.micro
+        AllocatedStorage: '5'
+        Engine: mysql
+        EngineVersion: 8.0.27
+        MasterUsername: !Ref RDSDbMasterUserName
+        MasterUserPassword: !Ref RDSDbMasterPassword
+        PubliclyAccessible: false
+        VPCSecurityGroups:
+           - !Ref DBSecurityGroup
+        DBSubnetGroupName: !Ref DBSubnetGroup
+        DBParameterGroupName: !Ref RDSDBParameterGroup
+        StorageEncrypted: true
+        KmsKeyId: !Ref RdsInstanceKey
+
+  #Creating Policy for connecting to S3 buckets
+  EC2InstanceServiceIAMPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: !Ref IAMPolicyName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+            Resource:
+              -  !Sub arn:aws:s3:::${S3Bucket}
+              -  !Sub arn:aws:s3:::${S3Bucket}/*
+      Roles:
+        - !Ref EC2InstanceServiceIAMRole
+  
+  #Creating IAM Role with IAM Policy to communicate with EC2 Instance
+  EC2InstanceServiceIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref IAMRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: WebAppArtifactsS3BucketPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject*'
+                  - 's3:PutObject*'
+                  - 's3:DeleteObject*'
+                Resource:
+                  -  !Sub arn:aws:s3:::${WebAppArtifactsS3BucketName}
+                  -  !Sub arn:aws:s3:::${WebAppArtifactsS3BucketName}/*
+      ManagedPolicyArns:
+          -  arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+          -  arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+
+  IAMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${AWS::StackName}-IAMInstanceProfile'
+      Path: "/"
+      Roles:
+        - Ref: EC2InstanceServiceIAMRole
+
+# #EC2 Instances
+#   EC2Instance:
+#     Type: AWS::EC2::Instance
+#     Properties:
+#       ImageId: !Ref AMIImageId
+#       InstanceType: t2.micro
+#       IamInstanceProfile: !Ref IAMInstanceProfile
+#       BlockDeviceMappings:
+#         - DeviceName: /dev/sda1
+#           Ebs:
+#             VolumeSize: 50
+#       NetworkInterfaces:
+#         - AssociatePublicIpAddress: true
+#           DeleteOnTermination: true
+#           DeviceIndex: "0"
+#           GroupSet:
+#             - Ref: InstanceSecurityGroup
+#           SubnetId: !Ref PublicSubnetA
+#       UserData:
+#         Fn::Base64: !Sub
+#           - |
+#             #!/bin/bash
+
+#             sudo tee /usr/webapp/service_parameters<<EOF
+#             AWS_ACCOUNT_ID=${AWS::AccountId}
+#             AWS_S3_BUCKET_NAME=${S3BucketName}
+#             AWS_RDS_DB_NAME=${RDSDbName}
+#             AWS_RDS_DB_ENDPOINT=${RdsEndpoint}
+#             AWS_RDS_DB_MASTER_PASSWORD=${RDSDbMasterPassword}
+#             AWS_RDS_DB_MASTER_USERNAME=${RDSDbMasterUserName}
+#             AWS_USER_EMAIL_VERIFICATION_SNS_TOPIC_NAME=${SNSTopicName}
+#             AWS_HOSTED_ZONE_DNS=${EnvironmentDev}.utkarshneu.me
+
+#             sudo tee /usr/webapp/rds_config.py<<EOF
+#             from app import app
+#             from flaskext.mysql import MySQL
+
+#             mysql = MySQL()
+
+#             app.config['MYSQL_DATABASE_USER'] = '${RDSDbMasterUserName}'
+#             app.config['MYSQL_DATABASE_PASSWORD'] = '${RDSDbMasterPassword}'
+#             app.config['MYSQL_DATABASE_DB'] = '${RDSDbName}'
+#             app.config['MYSQL_DATABASE_HOST'] = '${RdsEndpoint}'
+
+#             mysql.init_app(app)
+#             EOF
+
+#             sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/usr/webapp/config/amazon-cloudwatch-agent.json
+#             sudo systemctl daemon-reload
+#             sudo systemctl stop main.service
+#             sudo systemctl start main.service
+#             systemctl status main.service
+
+#           - {
+#               RdsEndpoint: !GetAtt RDSDBInstance.Endpoint.Address
+#             }
+  
+  #Assignment-06
+  #Adding Route53
+
+  ## Record Set Group for DNS updates
+  DNS:
+    Type: AWS::Route53::RecordSetGroup
+    DependsOn: LoadBalancer
+    Properties:
+      HostedZoneId: !Ref StageHostedZoneId ## Replace with appropriate environment's hosted zone ID
+      # HostedZoneName: !Ref HostedZName
+      Comment: Alias targeted to LoadBalancer
+      RecordSets:
+      - Name: !Join ["", [!Ref EnvironmentStage, ".utkarshneu.me."]]
+        Type: A
+        AliasTarget:
+          HostedZoneId: !GetAtt 'LoadBalancer.CanonicalHostedZoneID'
+          DNSName: !GetAtt 'LoadBalancer.DNSName'
+
+  #Assignment-08
+  #Amazon SNS Topic Creation
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref SNSTopicName
+      DisplayName: UserAccountVerificationTopic
+      Subscription:
+        - Endpoint: !GetAtt LambdaFunction.Arn
+          Protocol: lambda
+
+  #SNS Topic Policy
+  SNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: sns:Publish
+            Resource: !Ref SNSTopic
+            Condition:
+              StringEquals:
+                AWS:SourceOwner: !Ref AWS::AccountId
+      Topics:
+        - !Ref SNSTopic
+    
+  #SNS Access Policy
+  SNSAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SNSAccessPolicy
+      PolicyDocument:
+        Version: '2008-10-17'
+        Id: __default_policy_ID
+        Statement:
+          - Effect: Allow
+            Action: 'sns:Publish'
+            Resource:
+              - !Ref SNSTopic
+      Roles:
+        - !Ref EC2InstanceServiceIAMRole
+  
+  #DynamoDB Table Configuration
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "email"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "email"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      TableName: UserAccountVerificationTokenTable
+      TimeToLiveSpecification:
+        AttributeName: token_expiry_time_epoch
+        Enabled: true
+      Tags:
+        - Key: key
+          Value: value
+
+  DynamoDBServiceAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: DynamoDBServiceAccessPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - 'dynamodb:Get*'
+              - 'dynamodb:PutItem'
+              - 'dynamodb:DescribeTable'
+              - 'dynamodb:Query'
+              - 'dynamodb:Scan'
+              - 'dynamodb:Delete*'
+              - 'dynamodb:CreateTable'
+              - 'dynamodb:Update*'
+              - 'dynamodb:BatchWrite*'
+              - 'dynamodb:DescribeStream'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource:
+              - !Join [ "",[ "arn:aws:dynamodb:us-west-2:",!Ref "AWS::AccountId", ":table/UserAccountVerificationTokenTable", ], ]
+      Roles:
+        - !Ref LambdaFunctionRole
+
+  #LambdaFunction
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Description: Send email to SNS
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Role:
+        Fn::Join:
+          - ''
+          - - 'arn:aws:iam::'
+            - !Ref AWS::AccountId
+            - ":role/"
+            - !Ref LambdaFunctionRole
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Code:
+        S3Bucket: !Ref LambdaFunctionS3BucketName
+        S3Key: serverless.zip
+      Environment:
+        Variables:
+          SENDGRID_API_KEY: !Ref SGKey
+
+  #LambdaFunctionRole
+  LambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaFunctionRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  #To invoke lambda function
+  LambdaInvokePermission:
+    DependsOn: SNSTopic
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "sns.amazonaws.com"
+      SourceArn: !Ref SNSTopic
+
+# Assignment 09
+## Load Balancer Security Group
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Ref LoadBalancerSGName
+      GroupDescription: "Security Group for LoadBalancer"
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+
+## Auto Scaling Group Launch template
+  asgLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-launch-template'
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: 50
+              VolumeType: "gp2"
+              KmsKeyId: !Ref EbsVolumeKey
+              DeleteOnTermination: true
+              Encrypted: true
+        # NetworkInterfaces:
+        #   - DeviceIndex: 0
+        #     AssociatePublicIpAddress: true
+        ImageId: !Ref AMIImageId
+        InstanceType: t2.micro
+        KeyName: "aws"
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        IamInstanceProfile:
+          Arn: !GetAtt IAMInstanceProfile.Arn
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/bin/bash
+
+              sudo tee /usr/webapp/rds_config.py<<EOF
+              from app import app
+              from flaskext.mysql import MySQL
+
+              mysql = MySQL()
+
+              app.config['MYSQL_DATABASE_USER'] = '${RDSDbMasterUserName}'
+              app.config['MYSQL_DATABASE_PASSWORD'] = '${RDSDbMasterPassword}'
+              app.config['MYSQL_DATABASE_DB'] = '${RDSDbName}'
+              app.config['MYSQL_DATABASE_HOST'] = '${RdsEndpoint}'
+
+              mysql.init_app(app)
+              EOF
+
+              sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/usr/webapp/config/amazon-cloudwatch-agent.json
+              sudo systemctl daemon-reload
+              sudo systemctl stop main.service
+              sudo systemctl start main.service
+              systemctl status main.service
+
+            - {
+                RdsEndpoint: !GetAtt RDSDBInstance.Endpoint.Address
+              }
+  
+  ##Ebs Volume Key
+  EbsVolumeKey:
+    Type: AWS::KMS::Key
+    DependsOn: EC2InstanceServiceIAMRole
+    Properties:
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      Description: KMS Key for EBS
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "kms-key-for-ebs"
+        Statement:
+          - Sid: "Key for EBS Volumes"
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - "kms:*"
+            Resource: "*"
+          - Sid: "Allow administration and use of key"
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${AWS::AccountId}:role/EC2-CSYE6225"
+                - !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+            Action:
+              - 'kms:Create*'
+              - 'kms:Describe*'
+              - 'kms:Enable*'
+              - 'kms:List*'
+              - 'kms:Put*'
+              - 'kms:Update*'
+              - 'kms:Revoke*'
+              - 'kms:Disable*'
+              - 'kms:Get*'
+              - 'kms:Delete*'
+              - 'kms:ScheduleKeyDeletion'
+              - 'kms:CancelKeyDeletion'
+              - 'kms:DescribeKey'
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey'
+              - 'kms:GenerateDataKeyWithoutPlaintext'
+            Resource: "*"
+
+## RDS Key
+  RdsInstanceKey:
+    Type: AWS::KMS::Key
+    DependsOn: EC2InstanceServiceIAMRole
+    Properties:
+      Description: !Sub KMS Key for RDS
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "kms-key-for-rds"
+        Statement:
+          - Sid: "Key for RDS Instance"
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - "kms:*"
+            Resource: "*"
+          - Sid: "allow administration and use of key"
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/EC2-CSYE6225"
+            Action:
+              - 'kms:Create*'
+              - 'kms:Describe*'
+              - 'kms:Enable*'
+              - 'kms:List*'
+              - 'kms:Put*'
+              - 'kms:Update*'
+              - 'kms:Revoke*'
+              - 'kms:Disable*'
+              - 'kms:Get*'
+              - 'kms:Delete*'
+              - 'kms:ScheduleKeyDeletion'
+              - 'kms:CancelKeyDeletion'
+              - 'kms:DescribeKey'
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey'
+              - 'kms:GenerateDataKeyWithoutPlaintext'
+            Resource: "*"
+
+## Auto Scaling Group for webapp
+  asgWebApp:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - RDSDBInstance
+      - InstanceSecurityGroup
+    Properties:
+      AutoScalingGroupName: !Sub ${AWS::StackName}-asg
+      AvailabilityZones:
+        - us-west-2a
+        - us-west-2b
+        - us-west-2c
+      Cooldown: '60'
+      DesiredCapacity: '1'
+      HealthCheckGracePeriod: 90
+      HealthCheckType: EC2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref asgLaunchTemplate
+        Version: !GetAtt asgLaunchTemplate.LatestVersionNumber
+      MaxSize: '3'
+      MinSize: '1'
+      NewInstancesProtectedFromScaleIn: true
+      Tags:
+        - Key: Application
+          Value: webapp
+          PropagateAtLaunch: "true"
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-asg
+          PropagateAtLaunch: "true"
+      TargetGroupARNs:
+        - !Ref LoadBalancerTargetGroup
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+        - !Ref PublicSubnetC
+  
+  ## Policy for scaling up asg
+  asgScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref asgWebApp
+      AdjustmentType: ChangeInCapacity
+      Cooldown: 60
+      PolicyType: SimpleScaling
+      ScalingAdjustment: 1
+  
+  ## Policy for scaling down asg
+  asgScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref asgWebApp
+      AdjustmentType: ChangeInCapacity
+      Cooldown: 60
+      PolicyType: SimpleScaling
+      ScalingAdjustment: -1
+
+  ## CPU Alarms for high and low
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale-up if CPU above 2%"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 2
+      TreatMissingData: notBreaching
+      AlarmActions: 
+        - !Ref asgScaleUpPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref asgWebApp
+      ComparisonOperator: GreaterThanThreshold
+  
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Scale-in if CPU below 1% "
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      TreatMissingData: notBreaching
+      AlarmActions: 
+        - !Ref asgScaleDownPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref asgWebApp
+      ComparisonOperator: LessThanThreshold
+
+## Load Balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn:
+      - asgWebApp
+      - LoadBalancerSecurityGroup
+    Properties:
+      IpAddressType: ipv4
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Name: !Sub ${AWS::StackName}-load-balancer
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+        - !Ref PublicSubnetC
+      Tags:
+        - Key: Application
+          Value: webapp
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-load-balancer
+        - Key: InternetGatewayId
+          Value: !Ref InternetGateway
+      Type: application
+
+ ## Load Balancer Target Group
+  LoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 90
+      HealthCheckPath: '/healthz'
+      HealthCheckPort: '5001'
+      HealthCheckProtocol: 'HTTP'
+      HealthCheckTimeoutSeconds: 60
+      HealthyThresholdCount: 2
+      IpAddressType: ipv4
+      Name: !Sub ${AWS::StackName}-lb-tg
+      Port: 5001
+      Protocol: 'HTTP'
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-lb-tg
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+      TargetType: instance
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+
+## Load Balancer listener    
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref LoadBalancerTargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Certificates:
+        - CertificateArn: !Ref StageCertificate
+      Port: 443
+      Protocol: HTTPS
